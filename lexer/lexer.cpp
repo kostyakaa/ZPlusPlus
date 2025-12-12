@@ -79,10 +79,7 @@ void Lexer::InitTries() {
   keyword_trie_.Insert("char", (int)TokenType::KW_CHAR);
   keyword_trie_.Insert("string", (int)TokenType::KW_STRING);
 
-  // true/false по грамматике это BoolLiteral -> будем возвращать BOOL_LITERAL
-  // (храним в keyword_trie как "спец-маркер" через отдельные TokenType тоже можно,
-  // но проще: матчим строку и руками проверим ниже)
-  // ---- operators / punctuation (maximal munch) ----
+
   op_trie_.Insert("||", (int)TokenType::OROR);
   op_trie_.Insert("&&", (int)TokenType::ANDAND);
 
@@ -123,7 +120,6 @@ void Lexer::InitTries() {
   op_trie_.Insert(",", (int)TokenType::COMMA);
   op_trie_.Insert(";", (int)TokenType::SEMICOLON);
 
-  // не обязательно по грамматике отдельно, но полезно чтобы "." не было UNKNOWN
   op_trie_.Insert(".", (int)TokenType::DOT);
 }
 
@@ -159,14 +155,12 @@ void Lexer::SkipWhitespaceAndComments() {
       continue;
     }
 
-    // // comment
     if (c == '/' && Peek(1) == '/') {
       Get(); Get();
       while (!IsEnd() && Peek() != '\n') Get();
       continue;
     }
 
-    // /* comment */
     if (c == '/' && Peek(1) == '*') {
       Get(); Get();
       while (!IsEnd()) {
@@ -227,19 +221,15 @@ Token Lexer::IdentifierOrKeywordOrBool() {
   int startCol = col_;
 
   std::string text;
-  // IDStart
   text.push_back(Get());
-  // IDContSeq
   while (!IsEnd() && (IsLetter(Peek()) || IsDigit(Peek()) || Peek() == '_')) {
     text.push_back(Get());
   }
 
-  // bool literal
   if (text == "true" || text == "false") {
     return Make(TokenType::BOOL_LITERAL, text, startLine, startCol);
   }
 
-  // keyword / type
   int kw = keyword_trie_.MatchExact(text);
   if (kw != -1) return Make((TokenType)kw, text, startLine, startCol);
 
@@ -253,9 +243,8 @@ Token Lexer::Number() {
 
   while (!IsEnd() && IsDigit(Peek())) text.push_back(Get());
 
-  // DoubleLiteral ::= ... "." Digit ...
   if (!IsEnd() && Peek() == '.' && IsDigit(Peek(1))) {
-    text.push_back(Get()); // '.'
+    text.push_back(Get());
     while (!IsEnd() && IsDigit(Peek())) text.push_back(Get());
     return Make(TokenType::DOUBLE_LITERAL, text, startLine, startCol);
   }
@@ -267,22 +256,20 @@ Token Lexer::CharLiteral() {
   int startLine = line_;
   int startCol = col_;
 
-  Get(); // opening '
+  Get();
 
   if (IsEnd() || Peek() == '\n') {
     return Make(TokenType::UNKNOWN, "unterminated char literal", startLine, startCol);
   }
 
-  char ch = Get(); // content (по грамматике: letter|digit)
+  char ch = Get();
 
   if (Peek() != '\'') {
-    // либо слишком длинно, либо нет закрывающей кавычки
-    // доберём один символ, чтобы не зациклиться
     if (!IsEnd()) Get();
     return Make(TokenType::UNKNOWN, "bad char literal", startLine, startCol);
   }
 
-  Get(); // closing '
+  Get();
 
   return Make(TokenType::CHAR_LITERAL, std::string(1, ch), startLine, startCol);
 }
@@ -291,7 +278,7 @@ Token Lexer::StringLiteral() {
   int startLine = line_;
   int startCol = col_;
 
-  Get(); // opening "
+  Get();
 
   std::string text;
   while (!IsEnd() && Peek() != '"') {
@@ -306,7 +293,7 @@ Token Lexer::StringLiteral() {
     return Make(TokenType::UNKNOWN, "unterminated string literal", startLine, startCol);
   }
 
-  Get(); // closing "
+  Get();
   return Make(TokenType::STRING_LITERAL, text, startLine, startCol);
 }
 
@@ -323,7 +310,6 @@ Token Lexer::OperatorOrPunctOrUnknown() {
     return Make((TokenType)val, lexeme, startLine, startCol);
   }
 
-  // ничего не сматчилось -> UNKNOWN и съедаем 1 символ
   char bad = Get();
   return Make(TokenType::UNKNOWN, std::string(1, bad), startLine, startCol);
 }
