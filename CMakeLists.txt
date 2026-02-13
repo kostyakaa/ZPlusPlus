@@ -7,4 +7,6 @@ add_executable(ZPlusPlus main.cpp
         lexer/lexer.cpp
         lexer/lexer.h
         parser/parser.h
-        parser/parser.cpp)
+        parser/parser.cpp
+        semanter/semanter.h
+        semanter/semanter.cpp)
