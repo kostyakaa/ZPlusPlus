@@ -70,7 +70,7 @@ private:
   TypeInfo LookupVariable(const Token &id) const;
   void ExpectBoolCondition(const TypeInfo &cond, const Token &where);
 
-  // Глобальная обработка
+  // Обработка глобальных
   void CollectTopLevelSymbols();
   TypeInfo ParseTypeShallow();
   std::vector<TypeInfo> ParseParamTypesShallow();
