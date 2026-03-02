@@ -1,31 +1,17 @@
-#include "semanter.h"
+﻿#include "semanter.h"
 
 #include <sstream>
 #include <stdexcept>
 #include <utility>
 
-SemanticAnalyzer::SemanticAnalyzer(std::vector<Token> tokens)
-    : tokens_(std::move(tokens)) {}
+SemanticAnalyzer::SemanticAnalyzer(const ast::Program &program)
+    : program_(program) {}
 
 void SemanticAnalyzer::Analyze() {
   CollectTopLevelSymbols();
-  pos_ = 0;
-  ParseProgram();
-}
-
-bool SemanticAnalyzer::IsTypeStart(TokenType t) {
-  return t == TokenType::KW_INT || t == TokenType::KW_DOUBLE ||
-         t == TokenType::KW_BOOL || t == TokenType::KW_CHAR ||
-         t == TokenType::KW_STRING;
-}
-
-bool SemanticAnalyzer::IsExpressionStart(TokenType t) {
-  return t == TokenType::INT_LITERAL || t == TokenType::DOUBLE_LITERAL ||
-         t == TokenType::BOOL_LITERAL || t == TokenType::CHAR_LITERAL ||
-         t == TokenType::STRING_LITERAL || t == TokenType::IDENTIFIER ||
-         t == TokenType::LPAREN || t == TokenType::PLUS ||
-         t == TokenType::MINUS || t == TokenType::BANG ||
-         t == TokenType::TILDE;
+  for (const auto &decl : program_.decls) {
+    AnalyzeTopLevelDecl(*decl);
+  }
 }
 
 bool SemanticAnalyzer::IsNumericScalar(const TypeInfo &t) {
@@ -45,15 +31,15 @@ bool SemanticAnalyzer::IsBoolScalar(const TypeInfo &t) {
 
 TypeInfo SemanticAnalyzer::BoolType() { return TypeInfo{BaseTypeKind::BOOL, 0}; }
 
-BaseTypeKind SemanticAnalyzer::TokenToBaseType(TokenType t) {
+BaseTypeKind SemanticAnalyzer::ToBaseType(ast::BaseType t) {
   switch (t) {
-    case TokenType::KW_INT: return BaseTypeKind::INT;
-    case TokenType::KW_DOUBLE: return BaseTypeKind::DOUBLE;
-    case TokenType::KW_BOOL: return BaseTypeKind::BOOL;
-    case TokenType::KW_CHAR: return BaseTypeKind::CHAR;
-    case TokenType::KW_STRING: return BaseTypeKind::STRING;
-    default: return BaseTypeKind::INVALID;
+    case ast::BaseType::INT: return BaseTypeKind::INT;
+    case ast::BaseType::DOUBLE: return BaseTypeKind::DOUBLE;
+    case ast::BaseType::BOOL: return BaseTypeKind::BOOL;
+    case ast::BaseType::CHAR: return BaseTypeKind::CHAR;
+    case ast::BaseType::STRING: return BaseTypeKind::STRING;
   }
+  return BaseTypeKind::INVALID;
 }
 
 bool SemanticAnalyzer::CanAssign(const TypeInfo &dst, const TypeInfo &src) {
@@ -97,733 +83,459 @@ std::string SemanticAnalyzer::TypeToString(const TypeInfo &t) {
   return s;
 }
 
-[[noreturn]] void SemanticAnalyzer::ErrorAt(const Token &t, const std::string &message) const {
-  std::ostringstream oss;
-  if (t.type == TokenType::END_OF_FILE) {
-    oss << "Semantic error at EOF: " << message;
-  } else {
-    oss << "Semantic error at " << t.line << ":" << t.col << ": " << message;
-  }
-  throw std::runtime_error(oss.str());
-}
-
-Token SemanticAnalyzer::Peek(int offset) const {
-  if (offset < 0) {
-    size_t off = static_cast<size_t>(-offset);
-    if (off > pos_) return tokens_.front();
-    return tokens_[pos_ - off];
-  }
-  size_t p = pos_ + static_cast<size_t>(offset);
-  if (p >= tokens_.size()) return tokens_.back();
-  return tokens_[p];
-}
-
-Token SemanticAnalyzer::Consume() {
-  Token t = Peek();
-  if (pos_ < tokens_.size()) ++pos_;
-  return t;
-}
-
-bool SemanticAnalyzer::Match(TokenType type) {
-  if (Peek().type == type) {
-    Consume();
-    return true;
-  }
-  return false;
-}
-
-Token SemanticAnalyzer::Expect(TokenType type, const char *expected) {
-  Token t = Peek();
-  if (t.type != type) {
-    std::ostringstream oss;
-    oss << "expected " << expected << ", got '" << t.text << "'";
-    ErrorAt(t, oss.str());
-  }
-  return Consume();
+[[noreturn]] void SemanticAnalyzer::Error(const std::string &message) const {
+  throw std::runtime_error("Semantic error: " + message);
 }
 
 void SemanticAnalyzer::PushScope() { scopes_.emplace_back(); }
 void SemanticAnalyzer::PopScope() { scopes_.pop_back(); }
 
-void SemanticAnalyzer::DeclareLocal(const Token &id, const TypeInfo &type) {
+void SemanticAnalyzer::DeclareLocal(const std::string &name, const TypeInfo &type) {
   if (scopes_.empty()) {
-    ErrorAt(id, "internal error: no active scope");
+    Error("internal error: no active scope");
   }
   auto &cur = scopes_.back();
-  if (cur.count(id.text) != 0) {
-    ErrorAt(id, "redeclaration of '" + id.text + "'");
+  if (cur.count(name) != 0) {
+    Error("redeclaration of '" + name + "'");
   }
-  cur[id.text] = type;
+  cur[name] = type;
 }
 
-TypeInfo SemanticAnalyzer::LookupVariable(const Token &id) const {
+TypeInfo SemanticAnalyzer::LookupVariable(const std::string &name) const {
   for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
-    auto found = it->find(id.text);
+    auto found = it->find(name);
     if (found != it->end()) return found->second;
   }
-  auto g = globals_.find(id.text);
+  auto g = globals_.find(name);
   if (g != globals_.end()) return g->second;
-  throw std::runtime_error("undeclared identifier '" + id.text + "'");
+  throw std::runtime_error("undeclared identifier '" + name + "'");
 }
 
-void SemanticAnalyzer::ExpectBoolCondition(const TypeInfo &cond, const Token &where) {
+void SemanticAnalyzer::ExpectBoolCondition(const TypeInfo &cond, const std::string &where) {
   if (!IsBoolScalar(cond)) {
-    ErrorAt(where, "condition must be bool, got " + TypeToString(cond));
+    Error(where + ": condition must be bool, got " + TypeToString(cond));
   }
+}
+
+TypeInfo SemanticAnalyzer::TypeFromNodeShallow(const ast::TypeNode &t) const {
+  TypeInfo type{ToBaseType(t.base), 0};
+  type.dims = static_cast<int>(t.dims.size());
+  return type;
+}
+
+TypeInfo SemanticAnalyzer::TypeFromNode(const ast::TypeNode &t) {
+  TypeInfo type{ToBaseType(t.base), 0};
+  for (const auto &dimExpr : t.dims) {
+    TypeInfo sz = AnalyzeExpr(*dimExpr);
+    if (!IsIntegralScalar(sz)) {
+      Error("array size must be integral, got " + TypeToString(sz));
+    }
+    type.dims++;
+  }
+  return type;
 }
 
 void SemanticAnalyzer::CollectTopLevelSymbols() {
-  size_t saved = pos_;
-  pos_ = 0;
-
-  while (IsTypeStart(Peek().type)) {
-    TypeInfo declType = ParseTypeShallow();
-    Token id = Expect(TokenType::IDENTIFIER, "identifier");
-
-    if (Match(TokenType::LPAREN)) {
-      if (declType.dims > 0) {
-        ErrorAt(id, "function '" + id.text + "' cannot return an array type");
-      }
-      std::vector<TypeInfo> params = ParseParamTypesShallow();
-      Expect(TokenType::RPAREN, "')'");
-
-      if (functions_.count(id.text) != 0 || globals_.count(id.text) != 0) {
-        ErrorAt(id, "redefinition of top-level symbol '" + id.text + "'");
-      }
-      functions_[id.text] = FunctionSig{declType, params, id};
-
-      SkipBlockShallow();
-    } else {
-      if (functions_.count(id.text) != 0 || globals_.count(id.text) != 0) {
-        ErrorAt(id, "redefinition of top-level symbol '" + id.text + "'");
-      }
-      globals_[id.text] = declType;
-      SkipUntilSemicolonShallow();
-    }
-  }
-
-  Expect(TokenType::END_OF_FILE, "EOF");
-  pos_ = saved;
-}
-
-TypeInfo SemanticAnalyzer::ParseTypeShallow() {
-  Token t = Peek();
-  if (!IsTypeStart(t.type)) ErrorAt(t, "expected type");
-  TypeInfo type{TokenToBaseType(Consume().type), 0};
-  while (Match(TokenType::LBRACKET)) {
-    SkipBalancedUntilRBracketShallow();
-    type.dims++;
-  }
-  return type;
-}
-
-std::vector<TypeInfo> SemanticAnalyzer::ParseParamTypesShallow() {
-  std::vector<TypeInfo> params;
-  if (!IsTypeStart(Peek().type)) return params;
-
-  while (true) {
-    TypeInfo t = ParseTypeShallow();
-    Expect(TokenType::IDENTIFIER, "parameter name");
-    params.push_back(t);
-    if (!Match(TokenType::COMMA)) break;
-  }
-  return params;
-}
-
-void SemanticAnalyzer::SkipBalancedUntilRBracketShallow() {
-  int nested = 1;
-  while (nested > 0) {
-    Token t = Consume();
-    if (t.type == TokenType::END_OF_FILE) ErrorAt(t, "unterminated array suffix");
-    if (t.type == TokenType::LBRACKET) nested++;
-    if (t.type == TokenType::RBRACKET) nested--;
+  for (const auto &decl : program_.decls) {
+    CollectTopLevelDecl(*decl);
   }
 }
 
-void SemanticAnalyzer::SkipUntilSemicolonShallow() {
-  int paren = 0;
-  int bracket = 0;
-  while (true) {
-    Token t = Consume();
-    if (t.type == TokenType::END_OF_FILE) ErrorAt(t, "expected ';'");
-    if (t.type == TokenType::LPAREN) paren++;
-    if (t.type == TokenType::RPAREN) paren--;
-    if (t.type == TokenType::LBRACKET) bracket++;
-    if (t.type == TokenType::RBRACKET) bracket--;
-    if (t.type == TokenType::SEMICOLON && paren == 0 && bracket == 0) break;
-  }
-}
-
-void SemanticAnalyzer::SkipBlockShallow() {
-  Expect(TokenType::LBRACE, "'{'");
-  int depth = 1;
-  while (depth > 0) {
-    Token t = Consume();
-    if (t.type == TokenType::END_OF_FILE) ErrorAt(t, "unterminated block");
-    if (t.type == TokenType::LBRACE) depth++;
-    if (t.type == TokenType::RBRACE) depth--;
-  }
-}
-
-void SemanticAnalyzer::ParseProgram() {
-  while (IsTypeStart(Peek().type)) {
-    ParseTopLevel();
-  }
-  Expect(TokenType::END_OF_FILE, "EOF");
-}
-
-void SemanticAnalyzer::ParseTopLevel() {
-  TypeInfo declType = ParseType();
-  Token id = Expect(TokenType::IDENTIFIER, "identifier");
-
-  if (Match(TokenType::LPAREN)) {
-    if (declType.dims > 0) {
-      ErrorAt(id, "function '" + id.text + "' cannot return an array type");
+void SemanticAnalyzer::CollectTopLevelDecl(const ast::TopLevelDecl &decl) {
+  if (auto fn = dynamic_cast<const ast::FunctionDecl*>(&decl)) {
+    TypeInfo ret = TypeFromNodeShallow(fn->returnType);
+    if (ret.dims > 0) {
+      Error("function '" + fn->name + "' cannot return an array type");
     }
-    auto found = functions_.find(id.text);
-    if (found == functions_.end()) {
-      ErrorAt(id, "unknown function '" + id.text + "'");
+    std::vector<TypeInfo> params;
+    params.reserve(fn->params.size());
+    for (const auto &p : fn->params) {
+      params.push_back(TypeFromNodeShallow(p.type));
     }
-
-    std::vector<Token> paramNames;
-    std::vector<TypeInfo> paramTypes = ParseParamList(paramNames);
-    Expect(TokenType::RPAREN, "')'");
-
-    if (paramTypes.size() != found->second.params.size()) {
-      ErrorAt(id, "parameter count mismatch for '" + id.text + "'");
+    if (functions_.count(fn->name) != 0 || globals_.count(fn->name) != 0) {
+      Error("redefinition of top-level symbol '" + fn->name + "'");
     }
-
-    for (size_t i = 0; i < paramTypes.size(); ++i) {
-      if (paramTypes[i].base != found->second.params[i].base ||
-          paramTypes[i].dims != found->second.params[i].dims) {
-        ErrorAt(paramNames[i], "parameter type mismatch for function '" + id.text + "'");
-      }
-    }
-
-    if (declType.base != found->second.returnType.base ||
-        declType.dims != found->second.returnType.dims) {
-      ErrorAt(id, "return type mismatch for function '" + id.text + "'");
-    }
-
-    PushScope();
-    for (size_t i = 0; i < paramNames.size(); ++i) {
-      DeclareLocal(paramNames[i], paramTypes[i]);
-    }
-    currentReturnType_ = declType;
-    ParseBlock(false);
-    currentReturnType_.reset();
-    PopScope();
-  } else {
-    ParseVarDeclInitOpt(declType, id, true);
-    Expect(TokenType::SEMICOLON, "';'");
-  }
-}
-
-TypeInfo SemanticAnalyzer::ParseType() {
-  Token t = Peek();
-  if (!IsTypeStart(t.type)) ErrorAt(t, "expected type");
-
-  TypeInfo type{TokenToBaseType(Consume().type), 0};
-  while (Match(TokenType::LBRACKET)) {
-    Token idxTok = Peek();
-    TypeInfo sz = ParseExpression();
-    if (!IsIntegralScalar(sz)) {
-      ErrorAt(idxTok, "array size must be integral, got " + TypeToString(sz));
-    }
-    Expect(TokenType::RBRACKET, "']'");
-    type.dims++;
-  }
-  return type;
-}
-
-std::vector<TypeInfo> SemanticAnalyzer::ParseParamList(std::vector<Token> &namesOut) {
-  std::vector<TypeInfo> params;
-  if (!IsTypeStart(Peek().type)) return params;
-
-  while (true) {
-    TypeInfo t = ParseType();
-    Token id = Expect(TokenType::IDENTIFIER, "parameter name");
-    params.push_back(t);
-    namesOut.push_back(id);
-    if (!Match(TokenType::COMMA)) break;
-  }
-  return params;
-}
-
-void SemanticAnalyzer::ParseVarDeclInitOpt(const TypeInfo &declType, const Token &id,
-                                           bool isGlobal) {
-  if (!isGlobal) {
-    DeclareLocal(id, declType);
-  }
-  if (Match(TokenType::ASSIGN)) {
-    TypeInfo rhs = ParseExpression();
-    if (!CanAssign(declType, rhs)) {
-      ErrorAt(id, "cannot initialize '" + id.text + "' of type " +
-                      TypeToString(declType) + " with " + TypeToString(rhs));
-    }
-  }
-}
-
-void SemanticAnalyzer::ParseBlock(bool createScope) {
-  Expect(TokenType::LBRACE, "'{'");
-  if (createScope) PushScope();
-
-  while (Peek().type != TokenType::RBRACE) {
-    ParseStatement();
-  }
-
-  Expect(TokenType::RBRACE, "'}'");
-  if (createScope) PopScope();
-}
-
-void SemanticAnalyzer::ParseStatement() {
-  Token t = Peek();
-
-  if (t.type == TokenType::LBRACE) {
-    ParseBlock(true);
-    return;
-  }
-  if (t.type == TokenType::KW_IF) {
-    ParseIfStmt();
-    return;
-  }
-  if (t.type == TokenType::KW_WHILE) {
-    ParseWhileStmt();
-    return;
-  }
-  if (t.type == TokenType::KW_DO) {
-    ParseDoWhileStmt();
-    return;
-  }
-  if (t.type == TokenType::KW_FOR) {
-    ParseForStmt();
-    return;
-  }
-  if (t.type == TokenType::KW_BREAK) {
-    Consume();
-    if (loopDepth_ <= 0) ErrorAt(t, "'break' outside loop");
-    Expect(TokenType::SEMICOLON, "';'");
-    return;
-  }
-  if (t.type == TokenType::KW_CONTINUE) {
-    Consume();
-    if (loopDepth_ <= 0) ErrorAt(t, "'continue' outside loop");
-    Expect(TokenType::SEMICOLON, "';'");
-    return;
-  }
-  if (t.type == TokenType::KW_RETURN) {
-    Consume();
-    if (!currentReturnType_.has_value()) {
-      ErrorAt(t, "'return' outside function");
-    }
-    if (Peek().type == TokenType::SEMICOLON) {
-      ErrorAt(t, "return value is required");
-    }
-    TypeInfo ret = ParseExpression();
-    if (!CanAssign(*currentReturnType_, ret)) {
-      ErrorAt(t, "return type mismatch: expected " +
-                      TypeToString(*currentReturnType_) + ", got " + TypeToString(ret));
-    }
-    Expect(TokenType::SEMICOLON, "';'");
-    return;
-  }
-  if (IsTypeStart(t.type)) {
-    TypeInfo declType = ParseType();
-    Token id = Expect(TokenType::IDENTIFIER, "identifier");
-    ParseVarDeclInitOpt(declType, id, false);
-    Expect(TokenType::SEMICOLON, "';'");
-    return;
-  }
-  if (IsExpressionStart(t.type)) {
-    ParseExpression();
-    Expect(TokenType::SEMICOLON, "';'");
+    functions_[fn->name] = FunctionSig{ret, std::move(params)};
     return;
   }
 
-  ErrorAt(t, "expected statement");
-}
-
-void SemanticAnalyzer::ParseIfStmt() {
-  Token ifTok = Expect(TokenType::KW_IF, "'if'");
-  Expect(TokenType::LPAREN, "'('");
-  TypeInfo cond = ParseExpression();
-  ExpectBoolCondition(cond, ifTok);
-  Expect(TokenType::RPAREN, "')'");
-  ParseStatement();
-  if (Match(TokenType::KW_ELSE)) {
-    ParseStatement();
+  if (auto g = dynamic_cast<const ast::GlobalVarDecl*>(&decl)) {
+    if (functions_.count(g->name) != 0 || globals_.count(g->name) != 0) {
+      Error("redefinition of top-level symbol '" + g->name + "'");
+    }
+    TypeInfo t = TypeFromNodeShallow(g->type);
+    globals_[g->name] = t;
+    return;
   }
 }
 
-void SemanticAnalyzer::ParseWhileStmt() {
-  Token whileTok = Expect(TokenType::KW_WHILE, "'while'");
-  Expect(TokenType::LPAREN, "'('");
-  TypeInfo cond = ParseExpression();
-  ExpectBoolCondition(cond, whileTok);
-  Expect(TokenType::RPAREN, "')'");
-  loopDepth_++;
-  ParseBlock(true);
-  loopDepth_--;
+void SemanticAnalyzer::AnalyzeTopLevelDecl(const ast::TopLevelDecl &decl) {
+  if (auto fn = dynamic_cast<const ast::FunctionDecl*>(&decl)) {
+    AnalyzeFunction(*fn);
+    return;
+  }
+  if (auto g = dynamic_cast<const ast::GlobalVarDecl*>(&decl)) {
+    AnalyzeGlobal(*g);
+    return;
+  }
 }
 
-void SemanticAnalyzer::ParseDoWhileStmt() {
-  Expect(TokenType::KW_DO, "'do'");
-  loopDepth_++;
-  ParseBlock(true);
-  loopDepth_--;
-  Token whileTok = Expect(TokenType::KW_WHILE, "'while'");
-  Expect(TokenType::LPAREN, "'('");
-  TypeInfo cond = ParseExpression();
-  ExpectBoolCondition(cond, whileTok);
-  Expect(TokenType::RPAREN, "')'");
-  Expect(TokenType::SEMICOLON, "';'");
-}
+void SemanticAnalyzer::AnalyzeFunction(const ast::FunctionDecl &fn) {
+  TypeInfo declType = TypeFromNode(fn.returnType);
+  if (declType.dims > 0) {
+    Error("function '" + fn.name + "' cannot return an array type");
+  }
 
-void SemanticAnalyzer::ParseForStmt() {
-  Token forTok = Expect(TokenType::KW_FOR, "'for'");
-  Expect(TokenType::LPAREN, "'('");
+  auto found = functions_.find(fn.name);
+  if (found == functions_.end()) {
+    Error("unknown function '" + fn.name + "'");
+  }
+
+  std::vector<TypeInfo> paramTypes;
+  paramTypes.reserve(fn.params.size());
+  for (const auto &p : fn.params) {
+    paramTypes.push_back(TypeFromNode(p.type));
+  }
+
+  if (paramTypes.size() != found->second.params.size()) {
+    Error("parameter count mismatch for '" + fn.name + "'");
+  }
+
+  for (size_t i = 0; i < paramTypes.size(); ++i) {
+    if (paramTypes[i].base != found->second.params[i].base ||
+        paramTypes[i].dims != found->second.params[i].dims) {
+      Error("parameter type mismatch for function '" + fn.name + "'");
+    }
+  }
+
+  if (declType.base != found->second.returnType.base ||
+      declType.dims != found->second.returnType.dims) {
+    Error("return type mismatch for function '" + fn.name + "'");
+  }
 
   PushScope();
-
-  if (IsTypeStart(Peek().type)) {
-    TypeInfo declType = ParseType();
-    Token id = Expect(TokenType::IDENTIFIER, "identifier");
-    ParseVarDeclInitOpt(declType, id, false);
-  } else if (IsExpressionStart(Peek().type)) {
-    ParseExpression();
+  for (size_t i = 0; i < fn.params.size(); ++i) {
+    DeclareLocal(fn.params[i].name, paramTypes[i]);
   }
-  Expect(TokenType::SEMICOLON, "';'");
-
-  if (IsExpressionStart(Peek().type)) {
-    TypeInfo cond = ParseExpression();
-    ExpectBoolCondition(cond, forTok);
-  }
-  Expect(TokenType::SEMICOLON, "';'");
-
-  if (IsExpressionStart(Peek().type)) {
-    ParseExpression();
-  }
-  Expect(TokenType::RPAREN, "')'");
-
-  loopDepth_++;
-  ParseBlock(true);
-  loopDepth_--;
-
+  currentReturnType_ = declType;
+  AnalyzeBlock(*fn.body, false);
+  currentReturnType_.reset();
   PopScope();
 }
 
-std::optional<TypeInfo> SemanticAnalyzer::TryParseLValue() {
-  size_t saved = pos_;
-  if (Peek().type != TokenType::IDENTIFIER) return std::nullopt;
-
-  Token id = Consume();
-  TypeInfo t;
-  try {
-    t = LookupVariable(id);
-  } catch (const std::exception &) {
-    pos_ = saved;
-    return std::nullopt;
-  }
-
-  while (Match(TokenType::LBRACKET)) {
-    if (t.dims <= 0) {
-      ErrorAt(id, "cannot index non-array '" + id.text + "'");
+void SemanticAnalyzer::AnalyzeGlobal(const ast::GlobalVarDecl &g) {
+  TypeInfo declType = TypeFromNode(g.type);
+  if (g.init) {
+    TypeInfo rhs = AnalyzeExpr(*g.init);
+    if (!CanAssign(declType, rhs)) {
+      Error("cannot initialize '" + g.name + "' of type " +
+            TypeToString(declType) + " with " + TypeToString(rhs));
     }
-    Token idxTok = Peek();
-    TypeInfo idx = ParseExpression();
-    if (!IsIntegralScalar(idx)) {
-      ErrorAt(idxTok, "array index must be integral, got " + TypeToString(idx));
-    }
-    Expect(TokenType::RBRACKET, "']'");
-    t.dims--;
   }
-  return t;
 }
 
-TypeInfo SemanticAnalyzer::ParseExpression() {
-  TypeInfo t = ParseAssignmentExpr();
-  while (Match(TokenType::COMMA)) {
-    t = ParseAssignmentExpr();
+void SemanticAnalyzer::AnalyzeStmt(const ast::Stmt &stmt) {
+  if (auto b = dynamic_cast<const ast::BlockStmt*>(&stmt)) {
+    AnalyzeBlock(*b, true);
+    return;
   }
-  return t;
-}
-
-TypeInfo SemanticAnalyzer::ParseAssignmentExpr() {
-  size_t saved = pos_;
-  std::optional<TypeInfo> lhs = TryParseLValue();
-  if (lhs.has_value() && Match(TokenType::ASSIGN)) {
-    TypeInfo rhs = ParseAssignmentExpr();
-    if (!CanAssign(*lhs, rhs)) {
-      ErrorAt(Peek(-1), "cannot assign " + TypeToString(rhs) + " to " + TypeToString(*lhs));
-    }
-    return *lhs;
+  if (auto e = dynamic_cast<const ast::ExprStmt*>(&stmt)) {
+    AnalyzeExpr(*e->expr);
+    return;
   }
-  pos_ = saved;
-  return ParseLogicalOrExpr();
-}
-
-TypeInfo SemanticAnalyzer::ParseLogicalOrExpr() {
-  TypeInfo left = ParseLogicalAndExpr();
-  while (Match(TokenType::OROR)) {
-    TypeInfo right = ParseLogicalAndExpr();
-    if (!IsBoolScalar(left) || !IsBoolScalar(right)) {
-      ErrorAt(Peek(-1), "operator '||' requires bool operands");
-    }
-    left = BoolType();
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseLogicalAndExpr() {
-  TypeInfo left = ParseBitOrExpr();
-  while (Match(TokenType::ANDAND)) {
-    TypeInfo right = ParseBitOrExpr();
-    if (!IsBoolScalar(left) || !IsBoolScalar(right)) {
-      ErrorAt(Peek(-1), "operator '&&' requires bool operands");
-    }
-    left = BoolType();
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseBitOrExpr() {
-  TypeInfo left = ParseBitXorExpr();
-  while (Match(TokenType::OR)) {
-    TypeInfo right = ParseBitXorExpr();
-    if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
-      ErrorAt(Peek(-1), "operator '|' requires integral operands");
-    }
-    left = {BaseTypeKind::INT, 0};
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseBitXorExpr() {
-  TypeInfo left = ParseBitAndExpr();
-  while (Match(TokenType::XOR)) {
-    TypeInfo right = ParseBitAndExpr();
-    if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
-      ErrorAt(Peek(-1), "operator '^' requires integral operands");
-    }
-    left = {BaseTypeKind::INT, 0};
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseBitAndExpr() {
-  TypeInfo left = ParseEqualityExpr();
-  while (Match(TokenType::AND)) {
-    TypeInfo right = ParseEqualityExpr();
-    if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
-      ErrorAt(Peek(-1), "operator '&' requires integral operands");
-    }
-    left = {BaseTypeKind::INT, 0};
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseEqualityExpr() {
-  TypeInfo left = ParseRelationalExpr();
-  while (Peek().type == TokenType::EQ || Peek().type == TokenType::NEQ) {
-    Consume();
-    TypeInfo right = ParseRelationalExpr();
-    bool ok = false;
-    if (left.dims == right.dims && left.base == right.base) ok = true;
-    if (left.IsScalar() && right.IsScalar() &&
-        IsNumericScalar(left) && IsNumericScalar(right)) {
-      ok = true;
-    }
-    if (!ok) {
-      ErrorAt(Peek(-1), "incompatible operands for equality comparison");
-    }
-    left = BoolType();
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseRelationalExpr() {
-  TypeInfo left = ParseShiftExpr();
-  while (true) {
-    TokenType op = Peek().type;
-    if (op != TokenType::LT && op != TokenType::GT &&
-        op != TokenType::LE && op != TokenType::GE) {
-      break;
-    }
-    Consume();
-    TypeInfo right = ParseShiftExpr();
-    if (!IsNumericScalar(left) || !IsNumericScalar(right)) {
-      ErrorAt(Peek(-1), "relational operators require numeric operands");
-    }
-    left = BoolType();
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseShiftExpr() {
-  TypeInfo left = ParseAddExpr();
-  while (Peek().type == TokenType::SHL || Peek().type == TokenType::SHR) {
-    Consume();
-    TypeInfo right = ParseAddExpr();
-    if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
-      ErrorAt(Peek(-1), "shift operators require integral operands");
-    }
-    left = {BaseTypeKind::INT, 0};
-  }
-  return left;
-}
-
-TypeInfo SemanticAnalyzer::ParseAddExpr() {
-  TypeInfo left = ParseMulExpr();
-  while (true) {
-    TokenType op = Peek().type;
-    if (op != TokenType::PLUS && op != TokenType::MINUS) break;
-    Consume();
-    TypeInfo right = ParseMulExpr();
-
-    if (op == TokenType::PLUS &&
-        left.IsScalar() && right.IsScalar() &&
-        left.base == BaseTypeKind::STRING && right.base == BaseTypeKind::STRING) {
-      left = {BaseTypeKind::STRING, 0};
-    } else {
-      TypeInfo common = CommonNumericType(left, right);
-      if (!common.IsValid()) {
-        ErrorAt(Peek(-1), "operator requires numeric operands");
+  if (auto v = dynamic_cast<const ast::VarDeclStmt*>(&stmt)) {
+    TypeInfo declType = TypeFromNode(v->type);
+    DeclareLocal(v->name, declType);
+    if (v->init) {
+      TypeInfo rhs = AnalyzeExpr(*v->init);
+      if (!CanAssign(declType, rhs)) {
+        Error("cannot initialize '" + v->name + "' of type " +
+              TypeToString(declType) + " with " + TypeToString(rhs));
       }
-      left = common;
     }
+    return;
   }
-  return left;
+  if (auto i = dynamic_cast<const ast::IfStmt*>(&stmt)) {
+    TypeInfo cond = AnalyzeExpr(*i->cond);
+    ExpectBoolCondition(cond, "if");
+    AnalyzeStmt(*i->thenBranch);
+    if (i->elseBranch) AnalyzeStmt(*i->elseBranch);
+    return;
+  }
+  if (auto w = dynamic_cast<const ast::WhileStmt*>(&stmt)) {
+    TypeInfo cond = AnalyzeExpr(*w->cond);
+    ExpectBoolCondition(cond, "while");
+    loopDepth_++;
+    AnalyzeBlock(*w->body, true);
+    loopDepth_--;
+    return;
+  }
+  if (auto d = dynamic_cast<const ast::DoWhileStmt*>(&stmt)) {
+    loopDepth_++;
+    AnalyzeBlock(*d->body, true);
+    loopDepth_--;
+    TypeInfo cond = AnalyzeExpr(*d->cond);
+    ExpectBoolCondition(cond, "do-while");
+    return;
+  }
+  if (auto f = dynamic_cast<const ast::ForStmt*>(&stmt)) {
+    PushScope();
+    if (f->init) {
+      AnalyzeStmt(*f->init);
+    }
+    if (f->cond) {
+      TypeInfo cond = AnalyzeExpr(*f->cond);
+      ExpectBoolCondition(cond, "for");
+    }
+    if (f->step) {
+      AnalyzeExpr(*f->step);
+    }
+    loopDepth_++;
+    AnalyzeBlock(*f->body, true);
+    loopDepth_--;
+    PopScope();
+    return;
+  }
+  if (dynamic_cast<const ast::BreakStmt*>(&stmt)) {
+    if (loopDepth_ <= 0) Error("'break' outside loop");
+    return;
+  }
+  if (dynamic_cast<const ast::ContinueStmt*>(&stmt)) {
+    if (loopDepth_ <= 0) Error("'continue' outside loop");
+    return;
+  }
+  if (auto r = dynamic_cast<const ast::ReturnStmt*>(&stmt)) {
+    if (!currentReturnType_.has_value()) {
+      Error("'return' outside function");
+    }
+    if (!r->expr) {
+      Error("return value is required");
+    }
+    TypeInfo ret = AnalyzeExpr(*r->expr);
+    if (!CanAssign(*currentReturnType_, ret)) {
+      Error("return type mismatch: expected " +
+            TypeToString(*currentReturnType_) + ", got " + TypeToString(ret));
+    }
+    return;
+  }
 }
 
-TypeInfo SemanticAnalyzer::ParseMulExpr() {
-  TypeInfo left = ParseUnaryExpr();
-  while (true) {
-    TokenType op = Peek().type;
-    if (op != TokenType::STAR && op != TokenType::SLASH && op != TokenType::PERCENT) break;
-    Consume();
-    TypeInfo right = ParseUnaryExpr();
-
-    if (op == TokenType::PERCENT) {
-      if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
-        ErrorAt(Peek(-1), "operator '%' requires integral operands");
-      }
-      left = {BaseTypeKind::INT, 0};
-    } else {
-      TypeInfo common = CommonNumericType(left, right);
-      if (!common.IsValid()) {
-        ErrorAt(Peek(-1), "operator requires numeric operands");
-      }
-      left = common;
-    }
+void SemanticAnalyzer::AnalyzeBlock(const ast::BlockStmt &block, bool createScope) {
+  if (createScope) PushScope();
+  for (const auto &stmt : block.statements) {
+    AnalyzeStmt(*stmt);
   }
-  return left;
+  if (createScope) PopScope();
 }
 
-TypeInfo SemanticAnalyzer::ParseUnaryExpr() {
-  TokenType op = Peek().type;
-  if (op == TokenType::PLUS || op == TokenType::MINUS ||
-      op == TokenType::BANG || op == TokenType::TILDE) {
-    Token tok = Consume();
-    TypeInfo inner = ParseUnaryExpr();
+std::optional<TypeInfo> SemanticAnalyzer::AnalyzeLValue(const ast::Expr &expr) {
+  if (auto id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+    try {
+      return LookupVariable(id->name);
+    } catch (const std::exception &) {
+      return std::nullopt;
+    }
+  }
 
-    if (op == TokenType::PLUS || op == TokenType::MINUS) {
+  if (auto idx = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+    TypeInfo base = AnalyzeExpr(*idx->base);
+    if (base.dims <= 0) {
+      Error("cannot index non-array value");
+    }
+    for (const auto &i : idx->indices) {
+      TypeInfo t = AnalyzeExpr(*i);
+      if (!IsIntegralScalar(t)) {
+        Error("array index must be integral, got " + TypeToString(t));
+      }
+      base.dims--;
+      if (base.dims < 0) {
+        Error("too many indices for array");
+      }
+    }
+    return base;
+  }
+
+  return std::nullopt;
+}
+
+TypeInfo SemanticAnalyzer::AnalyzeExpr(const ast::Expr &expr) {
+  if (auto i = dynamic_cast<const ast::IntLiteralExpr*>(&expr)) {
+    (void)i;
+    return {BaseTypeKind::INT, 0};
+  }
+  if (auto d = dynamic_cast<const ast::DoubleLiteralExpr*>(&expr)) {
+    (void)d;
+    return {BaseTypeKind::DOUBLE, 0};
+  }
+  if (auto b = dynamic_cast<const ast::BoolLiteralExpr*>(&expr)) {
+    (void)b;
+    return {BaseTypeKind::BOOL, 0};
+  }
+  if (auto c = dynamic_cast<const ast::CharLiteralExpr*>(&expr)) {
+    (void)c;
+    return {BaseTypeKind::CHAR, 0};
+  }
+  if (auto s = dynamic_cast<const ast::StringLiteralExpr*>(&expr)) {
+    (void)s;
+    return {BaseTypeKind::STRING, 0};
+  }
+  if (auto id = dynamic_cast<const ast::IdentifierExpr*>(&expr)) {
+    try {
+      return LookupVariable(id->name);
+    } catch (const std::exception &e) {
+      Error(e.what());
+    }
+  }
+  if (auto call = dynamic_cast<const ast::CallExpr*>(&expr)) {
+    auto found = functions_.find(call->callee);
+    if (found == functions_.end()) {
+      Error("call to undeclared function '" + call->callee + "'");
+    }
+    if (call->args.size() != found->second.params.size()) {
+      Error("wrong argument count in call to '" + call->callee + "'");
+    }
+    for (size_t i = 0; i < call->args.size(); ++i) {
+      TypeInfo arg = AnalyzeExpr(*call->args[i]);
+      if (!CanAssign(found->second.params[i], arg)) {
+        Error("argument type mismatch in call to '" + call->callee + "'");
+      }
+    }
+    return found->second.returnType;
+  }
+  if (auto idx = dynamic_cast<const ast::IndexExpr*>(&expr)) {
+    TypeInfo base = AnalyzeExpr(*idx->base);
+    if (base.dims <= 0) {
+      Error("indexing non-array type " + TypeToString(base));
+    }
+    for (const auto &i : idx->indices) {
+      TypeInfo t = AnalyzeExpr(*i);
+      if (!IsIntegralScalar(t)) {
+        Error("array index must be integral, got " + TypeToString(t));
+      }
+      base.dims--;
+      if (base.dims < 0) {
+        Error("too many indices for array");
+      }
+    }
+    return base;
+  }
+  if (auto un = dynamic_cast<const ast::UnaryExpr*>(&expr)) {
+    TypeInfo inner = AnalyzeExpr(*un->operand);
+    if (un->op == TokenType::PLUS || un->op == TokenType::MINUS) {
       if (!IsNumericScalar(inner)) {
-        ErrorAt(tok, "unary +/- requires numeric operand");
+        Error("unary +/- requires numeric operand");
       }
       return inner.base == BaseTypeKind::DOUBLE ? inner : TypeInfo{BaseTypeKind::INT, 0};
     }
-    if (op == TokenType::BANG) {
+    if (un->op == TokenType::BANG) {
       if (!IsBoolScalar(inner)) {
-        ErrorAt(tok, "unary '!' requires bool operand");
+        Error("unary '!' requires bool operand");
       }
       return BoolType();
     }
-    if (!IsIntegralScalar(inner)) {
-      ErrorAt(tok, "unary '~' requires integral operand");
-    }
-    return {BaseTypeKind::INT, 0};
-  }
-  return ParsePrimary();
-}
-
-TypeInfo SemanticAnalyzer::ParsePrimary() {
-  TypeInfo t = ParsePrimaryCore();
-  while (Match(TokenType::LBRACKET)) {
-    Token idxTok = Peek();
-    TypeInfo idx = ParseExpression();
-    if (!IsIntegralScalar(idx)) {
-      ErrorAt(idxTok, "array index must be integral, got " + TypeToString(idx));
-    }
-    Expect(TokenType::RBRACKET, "']'");
-    if (t.dims <= 0) {
-      ErrorAt(idxTok, "indexing non-array type " + TypeToString(t));
-    }
-    t.dims--;
-  }
-  return t;
-}
-
-TypeInfo SemanticAnalyzer::ParsePrimaryCore() {
-  Token t = Peek();
-  if (t.type == TokenType::INT_LITERAL) {
-    Consume();
-    return {BaseTypeKind::INT, 0};
-  }
-  if (t.type == TokenType::DOUBLE_LITERAL) {
-    Consume();
-    return {BaseTypeKind::DOUBLE, 0};
-  }
-  if (t.type == TokenType::BOOL_LITERAL) {
-    Consume();
-    return {BaseTypeKind::BOOL, 0};
-  }
-  if (t.type == TokenType::CHAR_LITERAL) {
-    Consume();
-    return {BaseTypeKind::CHAR, 0};
-  }
-  if (t.type == TokenType::STRING_LITERAL) {
-    Consume();
-    return {BaseTypeKind::STRING, 0};
-  }
-  if (t.type == TokenType::IDENTIFIER) {
-    Token id = Consume();
-    if (Match(TokenType::LPAREN)) {
-      auto found = functions_.find(id.text);
-      if (found == functions_.end()) {
-        ErrorAt(id, "call to undeclared function '" + id.text + "'");
+    if (un->op == TokenType::TILDE) {
+      if (!IsIntegralScalar(inner)) {
+        Error("unary '~' requires integral operand");
       }
-      std::vector<TypeInfo> args = ParseArgList();
-      Expect(TokenType::RPAREN, "')'");
-      if (args.size() != found->second.params.size()) {
-        ErrorAt(id, "wrong argument count in call to '" + id.text + "'");
+      return {BaseTypeKind::INT, 0};
+    }
+    Error("unknown unary operator");
+  }
+  if (auto bin = dynamic_cast<const ast::BinaryExpr*>(&expr)) {
+    TokenType op = bin->op;
+
+    if (op == TokenType::ASSIGN) {
+      auto lhs = AnalyzeLValue(*bin->left);
+      if (!lhs.has_value()) {
+        Error("left-hand side of assignment is not assignable");
       }
-      for (size_t i = 0; i < args.size(); ++i) {
-        if (!CanAssign(found->second.params[i], args[i])) {
-          ErrorAt(id, "argument type mismatch in call to '" + id.text + "'");
+      TypeInfo rhs = AnalyzeExpr(*bin->right);
+      if (!CanAssign(*lhs, rhs)) {
+        Error("cannot assign " + TypeToString(rhs) + " to " + TypeToString(*lhs));
+      }
+      return *lhs;
+    }
+
+    if (op == TokenType::COMMA) {
+      AnalyzeExpr(*bin->left);
+      return AnalyzeExpr(*bin->right);
+    }
+
+    TypeInfo left = AnalyzeExpr(*bin->left);
+    TypeInfo right = AnalyzeExpr(*bin->right);
+
+    if (op == TokenType::OROR || op == TokenType::ANDAND) {
+      if (!IsBoolScalar(left) || !IsBoolScalar(right)) {
+        Error("logical operators require bool operands");
+      }
+      return BoolType();
+    }
+
+    if (op == TokenType::OR || op == TokenType::XOR || op == TokenType::AND) {
+      if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
+        Error("bitwise operators require integral operands");
+      }
+      return {BaseTypeKind::INT, 0};
+    }
+
+    if (op == TokenType::EQ || op == TokenType::NEQ) {
+      bool ok = false;
+      if (left.dims == right.dims && left.base == right.base) ok = true;
+      if (left.IsScalar() && right.IsScalar() &&
+          IsNumericScalar(left) && IsNumericScalar(right)) {
+        ok = true;
+      }
+      if (!ok) {
+        Error("incompatible operands for equality comparison");
+      }
+      return BoolType();
+    }
+
+    if (op == TokenType::LT || op == TokenType::GT ||
+        op == TokenType::LE || op == TokenType::GE) {
+      if (!IsNumericScalar(left) || !IsNumericScalar(right)) {
+        Error("relational operators require numeric operands");
+      }
+      return BoolType();
+    }
+
+    if (op == TokenType::SHL || op == TokenType::SHR) {
+      if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
+        Error("shift operators require integral operands");
+      }
+      return {BaseTypeKind::INT, 0};
+    }
+
+    if (op == TokenType::PLUS || op == TokenType::MINUS) {
+      if (op == TokenType::PLUS &&
+          left.IsScalar() && right.IsScalar() &&
+          left.base == BaseTypeKind::STRING && right.base == BaseTypeKind::STRING) {
+        return {BaseTypeKind::STRING, 0};
+      }
+      TypeInfo common = CommonNumericType(left, right);
+      if (!common.IsValid()) {
+        Error("operator requires numeric operands");
+      }
+      return common;
+    }
+
+    if (op == TokenType::STAR || op == TokenType::SLASH || op == TokenType::PERCENT) {
+      if (op == TokenType::PERCENT) {
+        if (!IsIntegralScalar(left) || !IsIntegralScalar(right)) {
+          Error("operator '%' requires integral operands");
         }
+        return {BaseTypeKind::INT, 0};
       }
-      return found->second.returnType;
+      TypeInfo common = CommonNumericType(left, right);
+      if (!common.IsValid()) {
+        Error("operator requires numeric operands");
+      }
+      return common;
     }
-    try {
-      return LookupVariable(id);
-    } catch (const std::exception &e) {
-      ErrorAt(id, e.what());
-    }
-  }
-  if (Match(TokenType::LPAREN)) {
-    TypeInfo inside = ParseExpression();
-    Expect(TokenType::RPAREN, "')'");
-    return inside;
-  }
-  ErrorAt(t, "expected primary expression");
-}
 
-std::vector<TypeInfo> SemanticAnalyzer::ParseArgList() {
-  std::vector<TypeInfo> args;
-  if (!IsExpressionStart(Peek().type)) return args;
-  args.push_back(ParseExpression());
-  while (Match(TokenType::COMMA)) {
-    args.push_back(ParseExpression());
+    Error("unknown binary operator");
   }
-  return args;
+
+  Error("unknown expression kind");
+  return {BaseTypeKind::INVALID, 0};
 }

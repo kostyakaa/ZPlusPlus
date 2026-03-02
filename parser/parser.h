@@ -1,20 +1,23 @@
-#pragma once
+﻿#pragma once
 
+#include "../ast/ast.h"
 #include "../lexer/lexer.h"
+
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 class Parser {
 public:
   explicit Parser(Lexer &lexer);
 
-  // Входная точка: бросает std::runtime_error при синтаксической ошибке
-  void ParseProgram();
+  // Entry point: throws std::runtime_error on syntax error
+  ast::Program ParseProgram();
 
 private:
   Lexer &lex_;
 
-  // === низкоуровневые хелперы ===
+  // === low-level helpers ===
   Token Peek();
   Token Consume();
   bool Match(TokenType type);
@@ -26,87 +29,61 @@ private:
   static bool IsExpressionStart(TokenType t);
   static bool IsStatementStart(TokenType t);
 
-  // === нетерминалы ===
+  // === nonterminals ===
 
   // Program ::= TopLevelList EOF
-  void ParseTopLevelList();
-  void ParseTopLevel();
-  void ParseTopLevelAfterId();
+  std::vector<ast::TopLevelPtr> ParseTopLevelList();
+  ast::TopLevelPtr ParseTopLevel();
 
   // VarDecl ::= Type ID VarDeclInitOpt
-  void ParseVarDecl();
-  void ParseVarDeclInitOpt();
+  ast::StmtPtr ParseVarDeclStmt();
+  ast::ExprPtr ParseVarDeclInitOpt();
 
   // Type ::= BaseType ArraySuffixOpt
-  // BaseType ::= "int" | "double" | "bool" | "char" | "string"
-  // ArraySuffixOpt ::= "[" Expression "]" ArraySuffixOpt | eps
-  void ParseType();
-  void ParseBaseType();
-  void ParseArraySuffixOpt();
+  ast::TypeNode ParseType();
+  ast::BaseType ParseBaseType();
+  std::vector<ast::ExprPtr> ParseArraySuffixOpt();
 
   // Block / Statements
   // Block ::= "{" StatementList "}"
-  // StatementList ::= Statement StatementList | eps
-  void ParseBlock();
-  void ParseStatementList();
-  void ParseStatement();
+  std::unique_ptr<ast::BlockStmt> ParseBlock();
+  std::vector<ast::StmtPtr> ParseStatementList();
+  ast::StmtPtr ParseStatement();
 
   // if / else
-  // IfStmt ::= "if" "(" Expression ")" Statement ElseOpt
-  // ElseOpt ::= "else" Statement | eps
-  void ParseIfStmt();
-  void ParseElseOpt();
+  ast::StmtPtr ParseIfStmt();
+  ast::StmtPtr ParseElseOpt();
 
   // while / do / for
-  // WhileStmt   ::= "while" "(" Expression ")" Block
-  // DoWhileStmt ::= "do" Block "while" "(" Expression ")" ";"
-  // ForStmt ::= "for" "(" ForInit ";" ForCond ";" ForStep ")" Block
-  // ForInit ::= VarDecl | Expression | eps
-  // ForCond ::= Expression | eps
-  // ForStep ::= Expression | eps
-  void ParseWhileStmt();
-  void ParseDoWhileStmt();
-  void ParseForStmt();
-  void ParseForInit();
-  void ParseForCond();
-  void ParseForStep();
+  ast::StmtPtr ParseWhileStmt();
+  ast::StmtPtr ParseDoWhileStmt();
+  ast::StmtPtr ParseForStmt();
+  ast::StmtPtr ParseForInit();
+  ast::ExprPtr ParseForCond();
+  ast::ExprPtr ParseForStep();
 
-  // Параметры функции
-  // ParamList ::= Param ParamListTail | eps
-  // ParamListTail ::= "," Param ParamListTail | eps
-  // Param ::= Type ID
-  void ParseParamList();
-  void ParseParam();
-  void ParseParamListTail();
+  // Function params
+  std::vector<ast::Param> ParseParamList();
+  ast::Param ParseParam();
 
-  // Аргументы вызовов
-  // ArgList ::= Expression ArgListTail | eps
-  // ArgListTail ::= "," Expression ArgListTail | eps
-  void ParseArgList();
-  void ParseArgListTail();
+  // Call args
+  std::vector<ast::ExprPtr> ParseArgList();
 
-  // ==== выражения (с приоритетами) ====
-  // Expression ::= AssignmentExpr CommaTail
-  // CommaTail ::= "," AssignmentExpr CommaTail | eps
-  void ParseExpression();
-
-  // AssignmentExpr ::= LogicalOrExpr ("=" AssignmentExpr)?
-  // (в оригинальной грамматике слева LValue, здесь это проверяется семантически)
-  void ParseAssignmentExpr();
-
-  void ParseLogicalOrExpr();   // ||
-  void ParseLogicalAndExpr();  // &&
-  void ParseBitOrExpr();       // |
-  void ParseBitXorExpr();      // ^
-  void ParseBitAndExpr();      // &
-  void ParseEqualityExpr();    // == !=
-  void ParseRelationalExpr();  // < > <= >=
-  void ParseShiftExpr();       // << >>
-  void ParseAddExpr();         // + -
-  void ParseMulExpr();         // * / %
-  void ParseUnaryExpr();       // + - ! ~
-  void ParsePrimary();         // PrimaryCore IndexSeq
-  void ParsePrimaryCore();     // Literal | ID [ "(" ArgList ")" ] | "(" Expression ")"
-  void ParseIndexSeq();        // "[" Expression "]" ...
-  void ParseLiteral();         // Number | BoolLiteral | CharLiteral | StringLiteral
+  // ==== expressions (precedence) ====
+  ast::ExprPtr ParseExpression();
+  ast::ExprPtr ParseAssignmentExpr();
+  ast::ExprPtr ParseLogicalOrExpr();
+  ast::ExprPtr ParseLogicalAndExpr();
+  ast::ExprPtr ParseBitOrExpr();
+  ast::ExprPtr ParseBitXorExpr();
+  ast::ExprPtr ParseBitAndExpr();
+  ast::ExprPtr ParseEqualityExpr();
+  ast::ExprPtr ParseRelationalExpr();
+  ast::ExprPtr ParseShiftExpr();
+  ast::ExprPtr ParseAddExpr();
+  ast::ExprPtr ParseMulExpr();
+  ast::ExprPtr ParseUnaryExpr();
+  ast::ExprPtr ParsePrimary();
+  ast::ExprPtr ParsePrimaryCore();
+  ast::ExprPtr ParseLiteral();
 };

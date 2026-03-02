@@ -1,11 +1,8 @@
-#include "parser.h"
+﻿#include "parser.h"
 
-#include "../lexer/lexer.h"   // ВАЖНО: путь тот же, что и в main.cpp
+#include "../ast/ast.h"
 #include <sstream>
 
-// ==================== низкоуровневые методы ====================
-
-enum class TokenType;
 Parser::Parser(Lexer &lexer) : lex_(lexer) {}
 
 Token Parser::Peek() {
@@ -97,174 +94,161 @@ bool Parser::IsStatementStart(TokenType t) {
 
 // ==================== Program / TopLevel ====================
 
-// Program ::= TopLevelList EOF
-void Parser::ParseProgram() {
-  ParseTopLevelList();
+ast::Program Parser::ParseProgram() {
+  ast::Program program;
+  program.decls = ParseTopLevelList();
   Expect(TokenType::END_OF_FILE, "EOF");
+  return program;
 }
 
-// TopLevelList ::= TopLevel TopLevelList | eps
-void Parser::ParseTopLevelList() {
+std::vector<ast::TopLevelPtr> Parser::ParseTopLevelList() {
+  std::vector<ast::TopLevelPtr> decls;
   while (IsTypeStart(Peek().type)) {
-    ParseTopLevel();
+    decls.push_back(ParseTopLevel());
   }
+  return decls;
 }
 
-// TopLevel ::= Type ID TopLevelAfterId
-void Parser::ParseTopLevel() {
-  ParseType();
-  Expect(TokenType::IDENTIFIER, "identifier");
-  ParseTopLevelAfterId();
-}
+ast::TopLevelPtr Parser::ParseTopLevel() {
+  ast::TypeNode type = ParseType();
+  Token id = Expect(TokenType::IDENTIFIER, "identifier");
 
-// TopLevelAfterId ::= "(" ParamList ")" Block | VarDeclInitOpt ";"
-void Parser::ParseTopLevelAfterId() {
   if (Match(TokenType::LPAREN)) {
-    // FuncDecl
-    ParseParamList();
+    std::vector<ast::Param> params = ParseParamList();
     Expect(TokenType::RPAREN, "')' after parameter list");
-    ParseBlock();
-  } else {
-    // Global var
-    ParseVarDeclInitOpt();
-    Expect(TokenType::SEMICOLON, "';' after global variable decl");
+    std::unique_ptr<ast::BlockStmt> body = ParseBlock();
+    return std::make_unique<ast::FunctionDecl>(
+        std::move(type), id.text, std::move(params), std::move(body));
   }
+
+  ast::ExprPtr init = ParseVarDeclInitOpt();
+  Expect(TokenType::SEMICOLON, "';' after global variable decl");
+  return std::make_unique<ast::GlobalVarDecl>(
+      std::move(type), id.text, std::move(init));
 }
 
 // ==================== VarDecl / Type ====================
 
-// VarDecl ::= Type ID VarDeclInitOpt
-void Parser::ParseVarDecl() {
-  ParseType();
-  Expect(TokenType::IDENTIFIER, "identifier");
-  ParseVarDeclInitOpt();
+ast::StmtPtr Parser::ParseVarDeclStmt() {
+  ast::TypeNode type = ParseType();
+  Token id = Expect(TokenType::IDENTIFIER, "identifier");
+  ast::ExprPtr init = ParseVarDeclInitOpt();
+  return std::make_unique<ast::VarDeclStmt>(
+      std::move(type), id.text, std::move(init));
 }
 
-// VarDeclInitOpt ::= "=" Expression | eps
-void Parser::ParseVarDeclInitOpt() {
+ast::ExprPtr Parser::ParseVarDeclInitOpt() {
   if (Match(TokenType::ASSIGN)) {
-    ParseExpression();
+    return ParseExpression();
   }
+  return nullptr;
 }
 
-// Type ::= BaseType ArraySuffixOpt
-void Parser::ParseType() {
-  ParseBaseType();
-  ParseArraySuffixOpt();
+ast::TypeNode Parser::ParseType() {
+  ast::BaseType base = ParseBaseType();
+  std::vector<ast::ExprPtr> dims = ParseArraySuffixOpt();
+  return ast::TypeNode{base, std::move(dims)};
 }
 
-// BaseType ::= "int" | "double" | "bool" | "char" | "string"
-void Parser::ParseBaseType() {
+ast::BaseType Parser::ParseBaseType() {
   TokenType t = Peek().type;
   if (!IsTypeStart(t)) {
     Error("expected type (int/double/bool/char/string)", Peek());
   }
   Consume();
+  switch (t) {
+    case TokenType::KW_INT: return ast::BaseType::INT;
+    case TokenType::KW_DOUBLE: return ast::BaseType::DOUBLE;
+    case TokenType::KW_BOOL: return ast::BaseType::BOOL;
+    case TokenType::KW_CHAR: return ast::BaseType::CHAR;
+    case TokenType::KW_STRING: return ast::BaseType::STRING;
+    default: break;
+  }
+  return ast::BaseType::INT;
 }
 
-// ArraySuffixOpt ::= "[" Expression "]" ArraySuffixOpt | eps
-void Parser::ParseArraySuffixOpt() {
+std::vector<ast::ExprPtr> Parser::ParseArraySuffixOpt() {
+  std::vector<ast::ExprPtr> dims;
   while (Match(TokenType::LBRACKET)) {
-    ParseExpression();
+    dims.push_back(ParseExpression());
     Expect(TokenType::RBRACKET, "']' after array size");
   }
+  return dims;
 }
 
 // ==================== Block / Statements ====================
 
-// Block ::= "{" StatementList "}"
-void Parser::ParseBlock() {
+std::unique_ptr<ast::BlockStmt> Parser::ParseBlock() {
   Expect(TokenType::LBRACE, "'{' to start block");
-  ParseStatementList();
+  auto block = std::make_unique<ast::BlockStmt>();
+  block->statements = ParseStatementList();
   Expect(TokenType::RBRACE, "'}' to close block");
+  return block;
 }
 
-// StatementList ::= Statement StatementList | eps
-void Parser::ParseStatementList() {
+std::vector<ast::StmtPtr> Parser::ParseStatementList() {
+  std::vector<ast::StmtPtr> stmts;
   while (IsStatementStart(Peek().type)) {
-    ParseStatement();
+    stmts.push_back(ParseStatement());
   }
+  return stmts;
 }
 
-// Statement ::=
-//   VarDecl ";"
-// | Expression ";"
-// | WhileStmt
-// | ForStmt
-// | DoWhileStmt
-// | IfStmt
-// | "break" ";"
-// | "continue" ";"
-// | "return" ReturnExprOpt ";"
-// | Block
-void Parser::ParseStatement() {
+ast::StmtPtr Parser::ParseStatement() {
   Token t = Peek();
 
-  // Block
   if (t.type == TokenType::LBRACE) {
-    ParseBlock();
-    return;
+    return ParseBlock();
   }
 
-  // if
   if (t.type == TokenType::KW_IF) {
-    ParseIfStmt();
-    return;
+    return ParseIfStmt();
   }
 
-  // while
   if (t.type == TokenType::KW_WHILE) {
-    ParseWhileStmt();
-    return;
+    return ParseWhileStmt();
   }
 
-  // do-while
   if (t.type == TokenType::KW_DO) {
-    ParseDoWhileStmt();
-    return;
+    return ParseDoWhileStmt();
   }
 
-  // for
   if (t.type == TokenType::KW_FOR) {
-    ParseForStmt();
-    return;
+    return ParseForStmt();
   }
 
-  // break
   if (t.type == TokenType::KW_BREAK) {
     Consume();
     Expect(TokenType::SEMICOLON, "';' after 'break'");
-    return;
+    return std::make_unique<ast::BreakStmt>();
   }
 
-  // continue
   if (t.type == TokenType::KW_CONTINUE) {
     Consume();
     Expect(TokenType::SEMICOLON, "';' after 'continue'");
-    return;
+    return std::make_unique<ast::ContinueStmt>();
   }
 
-  // return
   if (t.type == TokenType::KW_RETURN) {
     Consume();
+    ast::ExprPtr expr;
     if (Peek().type != TokenType::SEMICOLON) {
-      ParseExpression();  // ReturnExprOpt
+      expr = ParseExpression();
     }
     Expect(TokenType::SEMICOLON, "';' after 'return'");
-    return;
+    return std::make_unique<ast::ReturnStmt>(std::move(expr));
   }
 
-  // VarDecl or Expression
   if (IsTypeStart(t.type)) {
-    ParseVarDecl();
+    auto decl = ParseVarDeclStmt();
     Expect(TokenType::SEMICOLON, "';' after variable declaration");
-    return;
+    return decl;
   }
 
   if (IsExpressionStart(t.type)) {
-    ParseExpression();
+    auto expr = ParseExpression();
     Expect(TokenType::SEMICOLON, "';' after expression");
-    return;
+    return std::make_unique<ast::ExprStmt>(std::move(expr));
   }
 
   Error("expected statement", t);
@@ -272,278 +256,285 @@ void Parser::ParseStatement() {
 
 // ==================== if / else ====================
 
-// IfStmt ::= "if" "(" Expression ")" Statement ElseOpt
-void Parser::ParseIfStmt() {
+ast::StmtPtr Parser::ParseIfStmt() {
   Expect(TokenType::KW_IF, "'if'");
   Expect(TokenType::LPAREN, "'(' after 'if'");
-  ParseExpression();
+  ast::ExprPtr cond = ParseExpression();
   Expect(TokenType::RPAREN, "')' after if condition");
-  ParseStatement();
-  ParseElseOpt();
+  ast::StmtPtr thenStmt = ParseStatement();
+  ast::StmtPtr elseStmt = ParseElseOpt();
+  return std::make_unique<ast::IfStmt>(
+      std::move(cond), std::move(thenStmt), std::move(elseStmt));
 }
 
-// ElseOpt ::= "else" Statement | eps
-void Parser::ParseElseOpt() {
+ast::StmtPtr Parser::ParseElseOpt() {
   if (Match(TokenType::KW_ELSE)) {
-    ParseStatement();
+    return ParseStatement();
   }
+  return nullptr;
 }
 
 // ==================== while / do / for ====================
 
-// WhileStmt ::= "while" "(" Expression ")" Block
-void Parser::ParseWhileStmt() {
+ast::StmtPtr Parser::ParseWhileStmt() {
   Expect(TokenType::KW_WHILE, "'while'");
   Expect(TokenType::LPAREN, "'(' after 'while'");
-  ParseExpression();
+  ast::ExprPtr cond = ParseExpression();
   Expect(TokenType::RPAREN, "')' after while condition");
-  ParseBlock();
+  std::unique_ptr<ast::BlockStmt> body = ParseBlock();
+  return std::make_unique<ast::WhileStmt>(std::move(cond), std::move(body));
 }
 
-// DoWhileStmt ::= "do" Block "while" "(" Expression ")" ";"
-void Parser::ParseDoWhileStmt() {
+ast::StmtPtr Parser::ParseDoWhileStmt() {
   Expect(TokenType::KW_DO, "'do'");
-  ParseBlock();
+  std::unique_ptr<ast::BlockStmt> body = ParseBlock();
   Expect(TokenType::KW_WHILE, "'while' after do-block");
   Expect(TokenType::LPAREN, "'(' after 'while'");
-  ParseExpression();
+  ast::ExprPtr cond = ParseExpression();
   Expect(TokenType::RPAREN, "')' after do-while condition");
   Expect(TokenType::SEMICOLON, "';' after do-while");
+  return std::make_unique<ast::DoWhileStmt>(std::move(body), std::move(cond));
 }
 
-// ForStmt ::= "for" "(" ForInit ";" ForCond ";" ForStep ")" Block
-void Parser::ParseForStmt() {
+ast::StmtPtr Parser::ParseForStmt() {
   Expect(TokenType::KW_FOR, "'for'");
   Expect(TokenType::LPAREN, "'(' after 'for'");
-  ParseForInit();
+  ast::StmtPtr init = ParseForInit();
   Expect(TokenType::SEMICOLON, "';' after for-init");
-  ParseForCond();
+  ast::ExprPtr cond = ParseForCond();
   Expect(TokenType::SEMICOLON, "';' after for-condition");
-  ParseForStep();
+  ast::ExprPtr step = ParseForStep();
   Expect(TokenType::RPAREN, "')' after for-step");
-  ParseBlock();
+  std::unique_ptr<ast::BlockStmt> body = ParseBlock();
+  return std::make_unique<ast::ForStmt>(
+      std::move(init), std::move(cond), std::move(step), std::move(body));
 }
 
-// ForInit ::= VarDecl | Expression | eps
-void Parser::ParseForInit() {
+ast::StmtPtr Parser::ParseForInit() {
   TokenType t = Peek().type;
   if (IsTypeStart(t)) {
-    ParseVarDecl();
-  } else if (IsExpressionStart(t)) {
-    ParseExpression();
-  } else {
-    // eps
+    return ParseVarDeclStmt();
   }
+  if (IsExpressionStart(t)) {
+    auto expr = ParseExpression();
+    return std::make_unique<ast::ExprStmt>(std::move(expr));
+  }
+  return nullptr;
 }
 
-// ForCond ::= Expression | eps
-void Parser::ParseForCond() {
+ast::ExprPtr Parser::ParseForCond() {
   if (IsExpressionStart(Peek().type)) {
-    ParseExpression();
+    return ParseExpression();
   }
+  return nullptr;
 }
 
-// ForStep ::= Expression | eps
-void Parser::ParseForStep() {
+ast::ExprPtr Parser::ParseForStep() {
   if (IsExpressionStart(Peek().type)) {
-    ParseExpression();
+    return ParseExpression();
   }
+  return nullptr;
 }
 
-// ==================== параметры функций ====================
+// ==================== Function params ====================
 
-// ParamList ::= Param ParamListTail | eps
-void Parser::ParseParamList() {
+std::vector<ast::Param> Parser::ParseParamList() {
+  std::vector<ast::Param> params;
   if (!IsTypeStart(Peek().type)) {
-    // пустой список
-    return;
+    return params;
   }
-  ParseParam();
-  ParseParamListTail();
-}
-
-// ParamListTail ::= "," Param ParamListTail | eps
-void Parser::ParseParamListTail() {
+  params.push_back(ParseParam());
   while (Match(TokenType::COMMA)) {
-    ParseParam();
+    params.push_back(ParseParam());
   }
+  return params;
 }
 
-// Param ::= Type ID
-void Parser::ParseParam() {
-  ParseType();
-  Expect(TokenType::IDENTIFIER, "identifier in parameter");
+ast::Param Parser::ParseParam() {
+  ast::TypeNode type = ParseType();
+  Token id = Expect(TokenType::IDENTIFIER, "identifier in parameter");
+  return ast::Param{std::move(type), id.text};
 }
 
-// ==================== аргументы вызовов ====================
+// ==================== Call args ====================
 
-// ArgList ::= Expression ArgListTail | eps
-void Parser::ParseArgList() {
+std::vector<ast::ExprPtr> Parser::ParseArgList() {
+  std::vector<ast::ExprPtr> args;
   if (!IsExpressionStart(Peek().type)) {
-    return; // eps
+    return args;
   }
-  ParseExpression();
-  ParseArgListTail();
-}
-
-// ArgListTail ::= "," Expression ArgListTail | eps
-void Parser::ParseArgListTail() {
+  args.push_back(ParseExpression());
   while (Match(TokenType::COMMA)) {
-    ParseExpression();
+    args.push_back(ParseExpression());
   }
+  return args;
 }
 
-// ==================== выражения ====================
+// ==================== Expressions ====================
 
-// Expression ::= AssignmentExpr CommaTail
-// CommaTail ::= "," AssignmentExpr CommaTail | eps
-void Parser::ParseExpression() {
-  ParseAssignmentExpr();
+ast::ExprPtr Parser::ParseExpression() {
+  auto expr = ParseAssignmentExpr();
   while (Match(TokenType::COMMA)) {
-    ParseAssignmentExpr();
+    auto rhs = ParseAssignmentExpr();
+    expr = std::make_unique<ast::BinaryExpr>(TokenType::COMMA, std::move(expr), std::move(rhs));
   }
+  return expr;
 }
 
-// AssignmentExpr ::= LogicalOrExpr ("=" AssignmentExpr)?
-// (облегчённый вариант против LValue="..." из грамматики)
-void Parser::ParseAssignmentExpr() {
-  ParseLogicalOrExpr();
+ast::ExprPtr Parser::ParseAssignmentExpr() {
+  auto left = ParseLogicalOrExpr();
   if (Match(TokenType::ASSIGN)) {
-    ParseAssignmentExpr();
+    auto right = ParseAssignmentExpr();
+    return std::make_unique<ast::BinaryExpr>(TokenType::ASSIGN, std::move(left), std::move(right));
   }
+  return left;
 }
 
-// LogicalOrExpr ::= LogicalAndExpr ("||" LogicalAndExpr)*
-void Parser::ParseLogicalOrExpr() {
-  ParseLogicalAndExpr();
+ast::ExprPtr Parser::ParseLogicalOrExpr() {
+  auto left = ParseLogicalAndExpr();
   while (Match(TokenType::OROR)) {
-    ParseLogicalAndExpr();
+    auto right = ParseLogicalAndExpr();
+    left = std::make_unique<ast::BinaryExpr>(TokenType::OROR, std::move(left), std::move(right));
   }
+  return left;
 }
 
-// LogicalAndExpr ::= BitOrExpr ("&&" BitOrExpr)*
-void Parser::ParseLogicalAndExpr() {
-  ParseBitOrExpr();
+ast::ExprPtr Parser::ParseLogicalAndExpr() {
+  auto left = ParseBitOrExpr();
   while (Match(TokenType::ANDAND)) {
-    ParseBitOrExpr();
+    auto right = ParseBitOrExpr();
+    left = std::make_unique<ast::BinaryExpr>(TokenType::ANDAND, std::move(left), std::move(right));
   }
+  return left;
 }
 
-// BitOrExpr ::= BitXorExpr ("|" BitXorExpr)*
-void Parser::ParseBitOrExpr() {
-  ParseBitXorExpr();
+ast::ExprPtr Parser::ParseBitOrExpr() {
+  auto left = ParseBitXorExpr();
   while (Match(TokenType::OR)) {
-    ParseBitXorExpr();
+    auto right = ParseBitXorExpr();
+    left = std::make_unique<ast::BinaryExpr>(TokenType::OR, std::move(left), std::move(right));
   }
+  return left;
 }
 
-// BitXorExpr ::= BitAndExpr ("^" BitAndExpr)*
-void Parser::ParseBitXorExpr() {
-  ParseBitAndExpr();
+ast::ExprPtr Parser::ParseBitXorExpr() {
+  auto left = ParseBitAndExpr();
   while (Match(TokenType::XOR)) {
-    ParseBitAndExpr();
+    auto right = ParseBitAndExpr();
+    left = std::make_unique<ast::BinaryExpr>(TokenType::XOR, std::move(left), std::move(right));
   }
+  return left;
 }
 
-// BitAndExpr ::= EqualityExpr ("&" EqualityExpr)*
-void Parser::ParseBitAndExpr() {
-  ParseEqualityExpr();
+ast::ExprPtr Parser::ParseBitAndExpr() {
+  auto left = ParseEqualityExpr();
   while (Match(TokenType::AND)) {
-    ParseEqualityExpr();
+    auto right = ParseEqualityExpr();
+    left = std::make_unique<ast::BinaryExpr>(TokenType::AND, std::move(left), std::move(right));
   }
+  return left;
 }
 
-// EqualityExpr ::= RelationalExpr (("==" | "!=") RelationalExpr)*
-void Parser::ParseEqualityExpr() {
-  ParseRelationalExpr();
-  for (;;) {
-    if (Match(TokenType::EQ) || Match(TokenType::NEQ)) {
-      ParseRelationalExpr();
+ast::ExprPtr Parser::ParseEqualityExpr() {
+  auto left = ParseRelationalExpr();
+  while (true) {
+    if (Match(TokenType::EQ)) {
+      auto right = ParseRelationalExpr();
+      left = std::make_unique<ast::BinaryExpr>(TokenType::EQ, std::move(left), std::move(right));
+    } else if (Match(TokenType::NEQ)) {
+      auto right = ParseRelationalExpr();
+      left = std::make_unique<ast::BinaryExpr>(TokenType::NEQ, std::move(left), std::move(right));
     } else {
       break;
     }
   }
+  return left;
 }
 
-// RelationalExpr ::= ShiftExpr (("<" | ">" | "<=" | ">=") ShiftExpr)*
-void Parser::ParseRelationalExpr() {
-  ParseShiftExpr();
-  for (;;) {
+ast::ExprPtr Parser::ParseRelationalExpr() {
+  auto left = ParseShiftExpr();
+  while (true) {
     TokenType t = Peek().type;
     if (t == TokenType::LT || t == TokenType::GT ||
         t == TokenType::LE || t == TokenType::GE) {
       Consume();
-      ParseShiftExpr();
+      auto right = ParseShiftExpr();
+      left = std::make_unique<ast::BinaryExpr>(t, std::move(left), std::move(right));
     } else {
       break;
     }
   }
+  return left;
 }
 
-// ShiftExpr ::= AddExpr (("<<" | ">>") AddExpr)*
-void Parser::ParseShiftExpr() {
-  ParseAddExpr();
-  for (;;) {
+ast::ExprPtr Parser::ParseShiftExpr() {
+  auto left = ParseAddExpr();
+  while (true) {
     TokenType t = Peek().type;
     if (t == TokenType::SHL || t == TokenType::SHR) {
       Consume();
-      ParseAddExpr();
+      auto right = ParseAddExpr();
+      left = std::make_unique<ast::BinaryExpr>(t, std::move(left), std::move(right));
     } else {
       break;
     }
   }
+  return left;
 }
 
-// AddExpr ::= MulExpr (("+" | "-") MulExpr)*
-void Parser::ParseAddExpr() {
-  ParseMulExpr();
-  for (;;) {
+ast::ExprPtr Parser::ParseAddExpr() {
+  auto left = ParseMulExpr();
+  while (true) {
     TokenType t = Peek().type;
     if (t == TokenType::PLUS || t == TokenType::MINUS) {
       Consume();
-      ParseMulExpr();
+      auto right = ParseMulExpr();
+      left = std::make_unique<ast::BinaryExpr>(t, std::move(left), std::move(right));
     } else {
       break;
     }
   }
+  return left;
 }
 
-// MulExpr ::= UnaryExpr (("*" | "/" | "%") UnaryExpr)*
-void Parser::ParseMulExpr() {
-  ParseUnaryExpr();
-  for (;;) {
+ast::ExprPtr Parser::ParseMulExpr() {
+  auto left = ParseUnaryExpr();
+  while (true) {
     TokenType t = Peek().type;
-    if (t == TokenType::STAR || t == TokenType::SLASH ||
-        t == TokenType::PERCENT) {
+    if (t == TokenType::STAR || t == TokenType::SLASH || t == TokenType::PERCENT) {
       Consume();
-      ParseUnaryExpr();
+      auto right = ParseUnaryExpr();
+      left = std::make_unique<ast::BinaryExpr>(t, std::move(left), std::move(right));
     } else {
       break;
     }
   }
+  return left;
 }
 
-// UnaryExpr ::= UnaryOp UnaryExpr | Primary
-// UnaryOp ::= "+" | "-" | "!" | "~"
-void Parser::ParseUnaryExpr() {
+ast::ExprPtr Parser::ParseUnaryExpr() {
   TokenType t = Peek().type;
   if (t == TokenType::PLUS || t == TokenType::MINUS ||
       t == TokenType::BANG || t == TokenType::TILDE) {
     Consume();
-    ParseUnaryExpr();
-  } else {
-    ParsePrimary();
+    auto inner = ParseUnaryExpr();
+    return std::make_unique<ast::UnaryExpr>(t, std::move(inner));
   }
+  return ParsePrimary();
 }
 
-// Primary ::= PrimaryCore IndexSeq
-void Parser::ParsePrimary() {
-  ParsePrimaryCore();
-  ParseIndexSeq();
+ast::ExprPtr Parser::ParsePrimary() {
+  auto base = ParsePrimaryCore();
+  std::vector<ast::ExprPtr> indices;
+  while (Match(TokenType::LBRACKET)) {
+    indices.push_back(ParseExpression());
+    Expect(TokenType::RBRACKET, "']' after index expression");
+  }
+  if (indices.empty()) return base;
+  return std::make_unique<ast::IndexExpr>(std::move(base), std::move(indices));
 }
 
-// PrimaryCore ::= Literal | ID PrimaryIdTail | "(" Expression ")"
-void Parser::ParsePrimaryCore() {
+ast::ExprPtr Parser::ParsePrimaryCore() {
   Token t = Peek();
   switch (t.type) {
     case TokenType::INT_LITERAL:
@@ -551,51 +542,50 @@ void Parser::ParsePrimaryCore() {
     case TokenType::BOOL_LITERAL:
     case TokenType::CHAR_LITERAL:
     case TokenType::STRING_LITERAL:
-      ParseLiteral();
-      return;
+      return ParseLiteral();
 
     case TokenType::IDENTIFIER: {
-      Consume(); // ID
+      Consume();
+      std::string name = t.text;
       if (Match(TokenType::LPAREN)) {
-        // FuncCall
-        ParseArgList();
+        auto args = ParseArgList();
         Expect(TokenType::RPAREN, "')' after argument list");
+        return std::make_unique<ast::CallExpr>(std::move(name), std::move(args));
       }
-      return;
+      return std::make_unique<ast::IdentifierExpr>(std::move(name));
     }
 
-    case TokenType::LPAREN:
+    case TokenType::LPAREN: {
       Consume();
-      ParseExpression();
+      auto expr = ParseExpression();
       Expect(TokenType::RPAREN, "')' after expression");
-      return;
+      return expr;
+    }
 
     default:
       Error("expected primary expression", t);
   }
 }
 
-// IndexSeq ::= "[" Expression "]" IndexSeq | eps
-void Parser::ParseIndexSeq() {
-  while (Match(TokenType::LBRACKET)) {
-    ParseExpression();
-    Expect(TokenType::RBRACKET, "']' after index expression");
-  }
-}
-
-// Literal ::= Number | BoolLiteral | CharLiteral | StringLiteral
-// Number ::= IntLiteral | DoubleLiteral
-void Parser::ParseLiteral() {
-  TokenType t = Peek().type;
-  switch (t) {
+ast::ExprPtr Parser::ParseLiteral() {
+  Token t = Peek();
+  switch (t.type) {
     case TokenType::INT_LITERAL:
+      Consume();
+      return std::make_unique<ast::IntLiteralExpr>(t.text);
     case TokenType::DOUBLE_LITERAL:
+      Consume();
+      return std::make_unique<ast::DoubleLiteralExpr>(t.text);
     case TokenType::BOOL_LITERAL:
+      Consume();
+      return std::make_unique<ast::BoolLiteralExpr>(t.text == "true");
     case TokenType::CHAR_LITERAL:
+      Consume();
+      return std::make_unique<ast::CharLiteralExpr>(t.text);
     case TokenType::STRING_LITERAL:
       Consume();
-      break;
+      return std::make_unique<ast::StringLiteralExpr>(t.text);
     default:
-      Error("expected literal", Peek());
+      Error("expected literal", t);
   }
 }
